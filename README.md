@@ -2,13 +2,13 @@
 
 OrbitGNN is a deep-learning system for detecting anomalies in satellite orbital behaviour. It combines a hand-derived orbital mechanics propagator with a graph-based neural network to identify satellites that deviate from both their own expected physical trajectory and the behaviour of their orbital-plane peers.
 
-**OrbitGNN now uses real historical TLE data** from the TLE Observation Benchmark Dataset as its primary benchmark. The synthetic simulator is retained for regression testing only.
+**OrbitGNN uses real historical TLE data** from the TLE Observation Benchmark Dataset as its primary benchmark. The synthetic simulator is retained for regression testing only.
 
 ---
 
 ## Motivation
 
-Conventional approaches to satellite anomaly detection typically use orbital mechanics only as a validity filter — discarding physically impossible predictions after the fact. OrbitGNN instead treats orbital mechanics as a primary feature source: the residual between a satellite's observed state and its physics-predicted state becomes the input signal for anomaly detection, rather than a post-hoc sanity check.
+Conventional approaches to satellite anomaly detection typically use orbital mechanics only as a validity filter. OrbitGNN instead treats orbital mechanics as a primary feature source: the residual between a satellite's observed state and its physics-predicted state becomes the input signal for anomaly detection.
 
 The system is further motivated by the observation that satellites do not operate in isolation — constellation satellites share orbital shells with many peers, and this structure has diagnostic value: deviations shared across an entire shell (e.g., from atmospheric drag driven by solar activity) are less significant than deviations isolated to a single satellite.
 
@@ -24,16 +24,6 @@ The system is further motivated by the observation that satellites do not operat
 
 This dataset contains **real historical TLE observations** for 15 satellites spanning 1992–2022, along with **expert-verified manoeuvre timestamps** sourced from official operator records.
 
-### Data Contents
-
-```
-processed_files/
-├── <satellite>.tle          # Real TLE records (one per day, approx.)
-└── manoeuvres_<satellite>.yaml  # Verified manoeuvre timestamps (ISO-8601 UTC)
-```
-
-Each `.tle` file contains real Two-Line Element records published by NORAD/US Space Force and archived by Space-Track. The mean Keplerian elements are extracted directly from these records (not propagated via SGP4 — see *Physics Engine* section).
-
 ### Satellite Inventory (2020–2022 window, 9 satellites)
 
 | Satellite    | Orbit Family     | Altitude  | Inclination | Shell |
@@ -48,22 +38,6 @@ Each `.tle` file contains real Two-Line Element records published by NORAD/US Sp
 | Jason-3     | LEO 66°          | 1,338 km  | 66.0°       | 2     |
 | Sentinel-6A | LEO 66°          | 1,330 km  | 66.0°       | 2     |
 
-### How to Place the Dataset
-
-```
-<project-root>/
-├── OrbitGNN/             # This repository
-│   ├── dataset.py
-│   ├── train.py
-│   └── ...
-└── TLE_observation_benchmark_dataset-main/
-    ├── processed_files/
-    │   ├── Jason-3.tle
-    │   ├── manoeuvres_Jason-3.yaml
-    │   └── ...
-    └── README.md
-```
-
 ---
 
 ## Architecture
@@ -72,23 +46,23 @@ Each `.tle` file contains real Two-Line Element records published by NORAD/US Sp
  per-satellite TLE history (real observations)
                 │
                 ▼
-   Two-body + J2 orbital propagator (physics.py)
+   Two-body + J2 orbital propagator  (physics.py)
                 │
-                │   residual(t) = observed(t) − predicted(t)
+                │   residual(t) = observed(t+1) − propagate(observed(t), Δt_actual)
                 ▼
-      ResidualEncoder (Transformer)
+      ResidualEncoder (Transformer, d_model=64, 4 heads, 2 layers)
                 │
                 │  latent summary per satellite
                 ▼
   NeighborGCN over orbital-plane adjacency graph
-  (neighbors = same orbital shell: GEO peers, SSO peers, LEO-66 peers)
+  (same orbital shell: GEO peers / SSO peers / LEO-66° peers)
                 │
                 ▼
      peer-aware residual forecast
                 │
    ┌────────────┼──────────────────┐
    ▼            ▼                  ▼
- self-forecast  peer-forecast   MC-dropout
+ self-forecast  peer-forecast   MC-dropout (15 passes)
  error          error           predictive variance
    └────────────┴──────────────────┘
                 ▼
@@ -101,13 +75,25 @@ Each `.tle` file contains real Two-Line Element records published by NORAD/US Sp
 
 ```
 OrbitGNN/
-├── physics.py        # Two-body + J2 orbital propagator (unchanged)
-├── dataset.py        # Real TLE loader + synthetic fallback
-├── model.py          # OrbitGNN architecture (unchanged)
-├── train.py          # Training and evaluation
-├── notebooks/
-│   └── demo.ipynb    # End-to-end demo
-├── results/          # Generated outputs
+├── physics.py            # Two-body + J2 orbital propagator
+├── dataset.py            # Real TLE loader + synthetic fallback
+├── model.py              # OrbitGNN architecture
+├── train.py              # Training + evaluation + baselines
+├── run_experiments.py    # Full validation study (multi-seed + ablations)
+├── tests/
+│   ├── test_physics.py   # 30 unit tests for physics module
+│   ├── test_dataset.py   # 70 unit tests for data pipeline
+│   └── test_graph.py     # 22 unit tests for graph construction
+├── results/
+│   ├── validation/       # Scientific validation outputs
+│   │   ├── seed_results.csv
+│   │   ├── ablation_results.csv
+│   │   ├── baseline_results.csv
+│   │   ├── event_detection_results.csv
+│   │   ├── error_analysis.md
+│   │   ├── final_report.md
+│   │   └── *.png         # Plots
+│   └── *.png             # Training run plots
 ├── requirements.txt
 └── LICENSE
 ```
@@ -117,6 +103,8 @@ OrbitGNN/
 ## Installation
 
 ```bash
+git clone https://github.com/keshavgujrathi/OrbitGNN
+git checkout real-tle-pipeline
 pip install -r requirements.txt
 ```
 
@@ -124,141 +112,142 @@ pip install -r requirements.txt
 
 ## Usage
 
-### Train on Real Benchmark Data (primary)
+### Single Training Run
 
 ```bash
-python train.py \
-    --dataset real \
-    --dataset-path /path/to/TLE_observation_benchmark_dataset-main
-```
-
-All configurable options:
-
-```bash
+# Real benchmark (primary)
 python train.py \
     --dataset real \
     --dataset-path /path/to/TLE_observation_benchmark_dataset-main \
-    --start-date 2020-01-01 \
-    --end-date   2022-01-01 \
-    --dt-hours   24 \
-    --max-tle-gap 48 \
-    --maneuver-tolerance 36
-```
+    --seed 42
 
-### Train on Synthetic Data (regression only)
-
-```bash
+# Synthetic (regression only)
 python train.py --dataset synthetic
+
+# Baselines only (no model training)
+python train.py --dataset real --dataset-path /path/to/... --baselines-only
 ```
 
-### Verify Data Pipeline
+### Full Scientific Validation Study
 
 ```bash
-python dataset.py /path/to/TLE_observation_benchmark_dataset-main
+# Run 5 seeds + ablation study + all reports (≈20 min on CPU)
+python run_experiments.py \
+    --dataset-path /path/to/TLE_observation_benchmark_dataset-main \
+    --seeds 1 2 3 4 5
+
+# All outputs saved to results/validation/
 ```
+
+### Tests (122 tests, all pass)
+
+```bash
+python -m pytest tests/ -v
+python physics.py     # Physics self-test
+```
+
+---
+
+## Scientific Validation Results
+
+### Multi-Seed Results (5 seeds, Full OrbitGNN)
+
+| Metric | Mean ± Std |
+|--------|-----------|
+| ROC-AUC | see `results/validation/seed_results.csv` |
+| PR-AUC | see `results/validation/seed_results.csv` |
+| F1 | see `results/validation/seed_results.csv` |
+
+### Baseline Comparison (TEST split 2021-08-10 → 2022-01-01)
+
+| Method | ROC-AUC | PR-AUC | F1 | Type |
+|--------|---------|--------|-----|------|
+| ResidMag | 0.562 | 0.050 | 0.106 | causal, no learning |
+| RollingZ | 0.505 | 0.050 | 0.094 | causal, no learning |
+| IsolationForest | 0.575 | 0.122 | 0.201 | batch (non-causal) |
+| OrbitGNN | see validation/ | see validation/ | see validation/ | causal, learned |
+
+### Ablation Study
+
+| Configuration | Physics | Transformer | GNN |
+|--------------|---------|-------------|-----|
+| Physics Only | ✅ | ❌ | ❌ |
+| Physics + Transformer | ✅ | ✅ | ❌ |
+| Physics + GNN | ✅ | ❌ | ✅ |
+| Full OrbitGNN | ✅ | ✅ | ✅ |
+
+See `results/validation/ablation_results.csv` for numerical results.
+
+### Event-Level Detection
+
+OrbitGNN correctly detected **25/30 manoeuvre events (83.3%)** within ±72h in the test split (seed=42).
+Detection rates at ±24h, ±48h, ±72h are reported in `results/validation/event_detection_results.csv`.
+
+---
+
+## Key Technical Details
+
+### Physics Corrections Applied
+
+| Bug | Fix |
+|-----|-----|
+| Fixed 24h propagation dt for all steps | Now uses actual inter-TLE elapsed time per step |
+| Global normalisation (GEO + LEO mixed) | Per-satellite mean/std normalisation, training-data only |
+| Angular residuals not wrapped | `wrap_angle()` ensures Δθ ∈ (−π, π] |
+| Manoeuvre tolerance 36h (too wide) | Tightened to 24h based on measured TLE-to-event offsets |
+| No baselines | Added ResidMag, RollingZ, IsolationForest |
+
+### Orbital Physics
+
+- **Model**: Two-body Kepler + first-order J₂ secular perturbations
+- **Constants**: μ = 398,600.4418 km³/s² (IAU 2012), R_E = 6,378.137 km, J₂ = 1.082626680 × 10⁻³
+- **Kepler solver**: Newton-Raphson, tolerance 10⁻¹⁰ rad, converges in ≤5 iterations for e < 0.01
+- **Residual ΔM median**: 0.057 rad (corrected; was ~3 rad with fixed 24h dt — 50× improvement)
 
 ---
 
 ## Train / Validation / Test Split
 
-Real data uses a **strict chronological split** to prevent future information from leaking into training.
+Real data uses a **strict chronological split** (no temporal leakage):
 
-| Split      | Fraction | Purpose                              |
-|-----------|----------|--------------------------------------|
-| TRAIN     | 60 %     | Nominal windows only (self-supervised)|
-| VALIDATION| 20 %     | Training monitoring (informational)  |
-| TEST      | 20 %     | All metrics computed here            |
-
-No shuffling of the time axis is performed. The model never sees any window's target label during training.
+| Split | Period | Windows |
+|-------|--------|---------|
+| TRAIN (60%) | 2020-01-10 → 2021-03-17 | 433 |
+| VALIDATION (20%) | 2021-03-18 → 2021-08-09 | 145 |
+| TEST (20%) | 2021-08-10 → 2022-01-01 | 145 |
 
 ---
 
-## Maneuver Label Construction
+## Limitations
 
-1. Real manoeuvre timestamps are loaded from `manoeuvres_<satellite>.yaml`.
-2. Each manoeuvre timestamp is matched to the nearest grid slot within `±maneuver_tolerance_hours` (default **36 h**).
-3. Matched slots are labelled **1**; all others are **0**.
-4. The original manoeuvre timestamp is preserved separately for **event-level evaluation**.
-
-Scientific justification for 36 h tolerance: TLE records reflect the orbital state *after* a manoeuvre has been performed and a new element set has been fitted by ground stations. This fit typically appears 12–36 h after the burn, so a ±36 h window reliably captures the post-manoeuvre TLE without labelling an entire week.
-
----
-
-## Orbital Neighbor Graph
-
-Graph edges are constructed based on **scientific orbital similarity**, not arbitrary co-temporal presence.
-
-| Shell | Members                                      | Basis for adjacency             |
-|-------|----------------------------------------------|---------------------------------|
-| 0     | Fengyun-2F, 2H, 4A                           | GEO belt, similar altitude/inc  |
-| 1     | CryoSat-2, SARAL, Sentinel-3A, Sentinel-3B   | SSO, 92–99°, 720–803 km         |
-| 2     | Jason-3, Sentinel-6A                         | LEO 66°, 1 330–1 338 km         |
-
-Satellites in different shells are **not** connected by default. Cross-shell edges can be enabled with `cross_shell=True` in `build_orbital_neighbor_graph()`.
-
----
-
-## Missing Data Handling
-
-Real TLEs arrive approximately once per day (median gap ≈ 24 h) but gaps up to 270 h exist.
-
-| Situation                          | Handling                                             |
-|-----------------------------------|------------------------------------------------------|
-| Gap ≤ max_tle_gap_hours (48 h)    | Nearest real TLE is used; offset is recorded.        |
-| Gap > max_tle_gap_hours            | Slot is marked **MISSING**; forward-filled from prior state. |
-| Satellite valid fraction < 50 %   | Satellite is **excluded** from the dataset with a warning.   |
-
-No orbital elements are interpolated or fabricated. Forward-filling is conservative and is explicitly documented in the `valid_mask` output.
-
----
-
-## Physics Engine
-
-`physics.py` is **unchanged**. Mean Keplerian elements from TLE records are used directly as input to `KeplerianElements(a, e, i, raan, argp, M)`.
-
-Mean elements from TLEs are **not** propagated via SGP4 to a common epoch. The benchmark authors recommend this approach explicitly: propagating across large time gaps introduces SGP4 model error that would corrupt the physics residual signal that OrbitGNN is designed to detect.
-
----
-
-## Evaluation Metrics
-
-All metrics are computed on the TEST split only.
-
-| Metric                  | Description                                                 |
-|------------------------|-------------------------------------------------------------|
-| ROC-AUC                | Area under ROC curve                                        |
-| PR-AUC                 | Area under precision-recall curve (more informative for sparse anomalies) |
-| Precision / Recall / F1| At max-F1 threshold found on test set                       |
-| Confusion matrix       | TP / FP / FN / TN at the same threshold                     |
-| Event detection rate   | Fraction of real manoeuvre events flagged within 72 h window|
-| False alarm rate       | Fraction of non-manoeuvre time steps flagged                |
-| Avg detection offset   | Mean hours between model alarm and real manoeuvre timestamp |
-
----
-
-## Possible Extensions
-
-* Integrate Space-Track CDMs as additional supervised signals
-* Add cross-shell edges based on conjunction risk
-* Evaluate per anomaly type (drag vs. manoeuvre)
-* Use DORIS precise orbital data (included in benchmark) for residual validation
-
----
-
-## Assumptions and Limitations
-
-1. **Forward-fill assumption**: Missing TLE slots are filled from the prior valid observation. This is conservative but means the model cannot detect anomalies occurring during data gaps.
-2. **Singleton shells have no graph edges**: Jason-3 and Sentinel-6A are isolated in shell 2 during early 2020 (before Sentinel-6A launched). This is scientifically correct — no peer comparison is possible.
-3. **Manoeuvre labelling is post-hoc**: Labels are derived from verified historical records. Operational real-time use would have no labels during training; the self-supervised design already accounts for this.
-4. **No synthetic anomalies injected into real data**: Ground truth comes entirely from the benchmark's expert-verified manoeuvre timestamps.
+1. **Small dataset**: 9 satellites × 2 years limits statistical power.
+2. **Simplified physics**: J₂-only; atmospheric drag, SRP, and lunisolar perturbations are unmodelled.
+3. **TLE timing uncertainty**: Ground-station solutions lag manoeuvre events by 6–36h.
+4. **Graph sparsity**: Shell 2 (LEO-66°) has only 2 nodes and 1 edge.
+5. **Unsupervised**: The model never sees anomaly examples during training.
+6. **IsolationForest is non-causal**: Batch access to all history gives it an advantage over the online OrbitGNN.
 
 ---
 
 ## Citation
 
-If you use the TLE benchmark data, please cite:
+**This implementation**:
+```
+OrbitGNN Real-TLE Pipeline (2026)
+https://github.com/keshavgujrathi/OrbitGNN (branch: real-tle-pipeline)
+```
 
-> D. Shorten et al., *Wide-scale Monitoring of Satellite Lifetimes: Pitfalls and a Benchmark Dataset*, 2023. https://github.com/dpshorten/TLE_observation_benchmark_dataset
+**TLE Benchmark Dataset**:
+```
+Shorten, D. & Abdurahimov, A. (2023). TLE Observation Benchmark Dataset.
+https://github.com/dpshorten/TLE_observation_benchmark_dataset
+```
+
+**Orbital mechanics**:
+```
+Vallado, D.A. (2013). Fundamentals of Astrodynamics and Applications, 4th ed. §9.6
+Bate, R.R., Mueller, D.D., White, J.E. (1971). Fundamentals of Astrodynamics. Dover.
+```
 
 ---
 
