@@ -155,59 +155,95 @@ python physics.py                # physics self-test (also runs in CI)
 
 ## Scientific Validation Results
 
-### Multi-Seed Results (5 seeds, Full OrbitGNN)
+> All results on TEST split: 2021-08-10 → 2022-01-01 (145 windows, 30 manoeuvre events)
 
-| Metric | Mean ± Std |
-|--------|-----------|
-| ROC-AUC | see `results/validation/seed_results.csv` |
-| PR-AUC | see `results/validation/seed_results.csv` |
-| F1 | see `results/validation/seed_results.csv` |
+### Baseline Comparison (deterministic, fixed)
 
-### Baseline Comparison (TEST split 2021-08-10 → 2022-01-01)
+| Method | ROC-AUC | PR-AUC | Precision | Recall | F1 | Type |
+|--------|---------|--------|-----------|--------|----|------|
+| ResidMag | 0.5616 | 0.0497 | 0.0569 | 0.7931 | 0.1061 | causal, no learning |
+| RollingZ | 0.5054 | 0.0501 | 0.0550 | 0.3103 | 0.0935 | causal, no learning |
+| IsolationForest | 0.5746 | 0.1222 | 0.1450 | 0.3276 | 0.2011 | **batch, non-causal** |
 
-| Method | ROC-AUC | PR-AUC | F1 | Type |
-|--------|---------|--------|-----|------|
-| ResidMag | 0.562 | 0.050 | 0.106 | causal, no learning |
-| RollingZ | 0.505 | 0.050 | 0.094 | causal, no learning |
-| IsolationForest | 0.575 | 0.122 | 0.201 | batch (non-causal) |
-| OrbitGNN | see validation/ | see validation/ | see validation/ | causal, learned |
+### Multi-Seed Results — Full OrbitGNN (5 seeds, causal)
 
-### Ablation Study
+| Seed | ROC-AUC | PR-AUC | Precision | Recall | F1 |
+|------|---------|--------|-----------|--------|----|
+| 1 | 0.5880 | 0.0757 | 0.1429 | 0.2586 | 0.1840 |
+| 2 | 0.5720 | 0.0861 | 0.1772 | 0.2414 | 0.2044 |
+| 3 | 0.5877 | 0.0747 | 0.1522 | 0.2414 | 0.1867 |
+| 4 | 0.5815 | 0.0807 | 0.1519 | 0.2069 | 0.1752 |
+| 5 | **0.6036** | **0.0907** | 0.1522 | 0.2414 | 0.1867 |
+| **Mean ± Std** | **0.5866 ± 0.0103** | **0.0816 ± 0.0061** | 0.1553 ± 0.0115 | 0.2379 ± 0.0169 | **0.1874 ± 0.0095** |
 
-| Configuration | Physics | Transformer | GNN |
-|--------------|---------|-------------|-----|
-| Physics Only | ✅ | ❌ | ❌ |
-| Physics + Transformer | ✅ | ✅ | ❌ |
-| Physics + GNN | ✅ | ❌ | ✅ |
-| Full OrbitGNN | ✅ | ✅ | ✅ |
+### Ablation Study (mean ± std, 3 seeds each)
 
-See `results/validation/ablation_results.csv` for numerical results.
+| Configuration | Physics | Transformer | GNN | ROC-AUC | PR-AUC | F1 |
+|--------------|:-------:|:-----------:|:---:|---------|--------|-----|
+| Physics Only | ✅ | ❌ | ❌ | 0.5616 ± 0.0000 | 0.0497 ± 0.0000 | 0.1061 ± 0.0000 |
+| Physics + Transformer | ✅ | ✅ | ❌ | 0.5788 ± 0.0058 | 0.0830 ± 0.0028 | 0.1860 ± 0.0104 |
+| Physics + GNN | ✅ | ❌ | ✅ | 0.5587 ± 0.0060 | **0.1168 ± 0.0119** | **0.2404 ± 0.0045** |
+| **Full OrbitGNN** | ✅ | ✅ | ✅ | **0.5866 ± 0.0103** | 0.0816 ± 0.0061 | 0.1874 ± 0.0095 |
 
-### Event-Level Detection
+> The Transformer adds +0.017 ROC-AUC over physics-only. The GNN improves PR-AUC by 2.35×. The full model achieves best ROC-AUC.
 
-OrbitGNN correctly detected **25/30 manoeuvre events (83.3%)** within ±72h in the test split (seed=42).
-Detection rates at ±24h, ±48h, ±72h are reported in `results/validation/event_detection_results.csv`.
+### Event-Level Detection (mean ± std across 5 seeds)
+
+| Tolerance | Detection Rate | False Alarms/day |
+|-----------|---------------|-----------------|
+| ±24h | 39.3% ± 3.3% | 0.29 |
+| ±48h | 51.3% ± 7.5% | 0.27 |
+| ±72h | **61.3% ± 8.6%** | 0.24 |
+
+Detection offset: mean +3.9h, median −6.5h (negative = alarm before official timestamp, explained by TLE publication lag).
+
+### Per-Satellite Results (seed=5, ±72h tolerance)
+
+| Satellite | Shell | Man | Det | Det% | FA/day | ΔV est (m/s) |
+|-----------|-------|-----|-----|------|--------|-------------|
+| CryoSat-2 | SSO/Polar | 4 | 3 | 75.0% | 0.069 | ~0.000 |
+| Fengyun-2F | GEO | 3 | 2 | 66.7% | 0.014 | 0.254 |
+| Fengyun-2H | GEO | 1 | 1 | **100%** | 0.014 | 0.001 |
+| Fengyun-4A | GEO | 8 | 5 | 62.5% | 0.014 | 0.117 |
+| Jason-3 | LEO-66° | 1 | 1 | **100%** | 0.007 | 0.005 |
+| SARAL | SSO/Polar | 1 | 1 | **100%** | 0.090 | 0.044 |
+| Sentinel-3A | SSO/Polar | 7 | 6 | 85.7% | **0.000** | 0.011 |
+| Sentinel-3B | SSO/Polar | 3 | 2 | 66.7% | 0.014 | 0.011 |
+| Sentinel-6A | LEO-66° | 2 | 0 | 0.0% | 0.035 | N/A |
+
+ΔV estimated via linearised Gauss tangential burn: `ΔV ≈ (n·|Δa|)/2` where `n=√(μ/a³)`.
 
 ---
 
 ## Key Technical Details
 
-### Physics Corrections Applied
+### Physics Corrections Applied (vs. original synthetic pipeline)
 
-| Bug | Fix |
-|-----|-----|
-| Fixed 24h propagation dt for all steps | Now uses actual inter-TLE elapsed time per step |
-| Global normalisation (GEO + LEO mixed) | Per-satellite mean/std normalisation, training-data only |
-| Angular residuals not wrapped | `wrap_angle()` ensures Δθ ∈ (−π, π] |
-| Manoeuvre tolerance 36h (too wide) | Tightened to 24h based on measured TLE-to-event offsets |
-| No baselines | Added ResidMag, RollingZ, IsolationForest |
+| Bug | Original | Fixed |
+|-----|----------|-------|
+| Propagation dt | Fixed 24h for all steps | Actual inter-TLE elapsed time per step |
+| Normalisation | Global GEO+LEO mixed | Per-satellite mean/std, training data only |
+| Angular residuals | Not wrapped | `wrap_angle()` → Δθ ∈ (−π, π] |
+| Manoeuvre tolerance | 36h | Tightened to 24h |
+| Baselines | None | ResidMag, RollingZ, IsolationForest |
+| ΔM residual after fix | ~3 rad (50× too large) | **0.057 rad** |
 
 ### Orbital Physics
 
 - **Model**: Two-body Kepler + first-order J₂ secular perturbations
-- **Constants**: μ = 398,600.4418 km³/s² (IAU 2012), R_E = 6,378.137 km, J₂ = 1.082626680 × 10⁻³
-- **Kepler solver**: Newton-Raphson, tolerance 10⁻¹⁰ rad, converges in ≤5 iterations for e < 0.01
-- **Residual ΔM median**: 0.057 rad (corrected; was ~3 rad with fixed 24h dt — 50× improvement)
+- **Constants**: μ = 398,600.4418 km³/s², R_E = 6,378.137 km, J₂ = 1.082626680 × 10⁻³
+- **Kepler solver**: Newton-Raphson, tolerance 10⁻¹⁰ rad
+- **Δv estimation**: `ΔV ≈ (n·|Δa|)/2` — linearised Gauss tangential burn formula
+
+### New in This Branch
+
+| Feature | Details |
+|---------|---------|
+| `estimate_delta_v()` | Post-hoc ΔV characterisation from TLE Δa |
+| `per_satellite_analysis()` | Per-satellite detection / FA / ΔV table |
+| `tests/test_model.py` | 35 model unit tests (shapes, NaN, gradients) |
+| `.github/workflows/tests.yml` | CI on Python 3.10/3.11/3.12 |
+| `notebooks/demo.ipynb` | 8-cell real-TLE end-to-end walkthrough |
 
 ---
 
@@ -226,11 +262,12 @@ Real data uses a **strict chronological split** (no temporal leakage):
 ## Limitations
 
 1. **Small dataset**: 9 satellites × 2 years limits statistical power.
-2. **Simplified physics**: J₂-only; atmospheric drag, SRP, and lunisolar perturbations are unmodelled.
+2. **Simplified physics**: J₂-only; atmospheric drag, SRP, and lunisolar perturbations unmodelled.
 3. **TLE timing uncertainty**: Ground-station solutions lag manoeuvre events by 6–36h.
 4. **Graph sparsity**: Shell 2 (LEO-66°) has only 2 nodes and 1 edge.
-5. **Unsupervised**: The model never sees anomaly examples during training.
-6. **IsolationForest is non-causal**: Batch access to all history gives it an advantage over the online OrbitGNN.
+5. **Unsupervised**: Model never sees anomaly examples during training.
+6. **IsolationForest is non-causal**: Batch access to full history gives it an advantage over causal OrbitGNN.
+7. **Sentinel-6A coverage**: Only 9% valid TLE slots in 2020 (satellite was recently launched) — detection is 0%.
 
 ---
 
@@ -252,6 +289,7 @@ https://github.com/dpshorten/TLE_observation_benchmark_dataset
 ```
 Vallado, D.A. (2013). Fundamentals of Astrodynamics and Applications, 4th ed. §9.6
 Bate, R.R., Mueller, D.D., White, J.E. (1971). Fundamentals of Astrodynamics. Dover.
+Curtis, H.D. (2013). Orbital Mechanics for Engineering Students, 3rd ed. §6.3
 ```
 
 ---
