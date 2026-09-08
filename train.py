@@ -180,7 +180,8 @@ def pr_auc(y_true: np.ndarray, scores: np.ndarray) -> float:
     pairs = sorted(zip(rec, prec))
     rs    = [p[0] for p in pairs]
     ps    = [p[1] for p in pairs]
-    return float(np.trapezoid(ps, rs))
+    _trapz = getattr(np, "trapezoid", None) or np.trapz
+    return float(_trapz(ps, rs))
 
 
 def prf1(

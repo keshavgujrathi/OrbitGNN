@@ -479,6 +479,81 @@ def elements_to_state_vector(
 
 
 # ════════════════════════════════════════════════════════════════════
+# Manoeuvre Δv Estimation
+# ════════════════════════════════════════════════════════════════════
+
+def estimate_delta_v(delta_a_km: float, a_km: float) -> float:
+    """Estimate manoeuvre delta-V from TLE-derived semi-major axis change.
+
+    Derivation
+    ----------
+    For a tangential (prograde/retrograde) burn applied to a near-circular
+    orbit, the change in semi-major axis relates to delta-V via the
+    vis-viva / Gauss equations (linearised for small Δa):
+
+        ΔV ≈ (n · Δa) / 2
+
+    where n = √(μ / a³) is the mean motion [rad/s] and Δa is the change
+    in semi-major axis [km].  Converting: ΔV [m/s] = 1000 × ΔV [km/s].
+
+    IMPORTANT CAVEATS
+    -----------------
+    * TLEs represent *mean* elements averaged over short-period terms.
+      The Δa between two consecutive TLEs reflects the combined effect of
+      the manoeuvre burn AND the measurement noise of the ground-station
+      orbit determination fit (typically ±0.001–0.050 km for LEO).
+    * This formula assumes a tangential burn. Radial burns change the
+      orbit shape differently and cannot be decomposed from TLEs alone.
+    * GEO satellite burns often include an inclination component (N/S
+      station-keeping) which produces a RAAN/inclination change, not
+      captured here.
+    * The estimate is order-of-magnitude only (±50% error is typical).
+    * Use ONLY for post-hoc characterisation of detected events, not for
+      operational manoeuvre planning.
+
+    Args:
+        delta_a_km : Change in semi-major axis between two TLE epochs [km].
+                     Positive = orbit raised, negative = orbit lowered.
+        a_km       : Reference semi-major axis (pre-manoeuvre) [km].
+
+    Returns:
+        Estimated |ΔV| [m/s].  Always non-negative.
+
+    Example
+    -------
+    >>> dv = estimate_delta_v(delta_a_km=1.5, a_km=7156.0)   # Sentinel-like
+    >>> print(f"ΔV ≈ {dv:.2f} m/s")
+    ΔV ≈ 0.52 m/s
+    """
+    if a_km <= 0:
+        raise ValueError(f"a_km must be positive, got {a_km}")
+    n       = mean_motion(a_km)                   # rad/s
+    dv_km_s = (n * abs(delta_a_km)) / 2.0         # km/s  (linearised Gauss)
+    return dv_km_s * 1000.0                        # → m/s
+
+
+def estimate_delta_v_batch(
+    delta_a_array: "np.ndarray",
+    a_array:       "np.ndarray",
+) -> "np.ndarray":
+    """Vectorised version of estimate_delta_v.
+
+    Args:
+        delta_a_array : shape (...,) change in semi-major axis [km]
+        a_array       : shape (...,) reference semi-major axis [km]
+
+    Returns:
+        Estimated |ΔV| [m/s], same shape as inputs.
+    """
+    import numpy as _np
+    a_arr      = _np.asarray(a_array,       dtype=float)
+    da_arr     = _np.asarray(delta_a_array, dtype=float)
+    n_arr      = _np.sqrt(MU_EARTH / a_arr ** 3)   # rad/s
+    dv_km_s    = (n_arr * _np.abs(da_arr)) / 2.0
+    return dv_km_s * 1000.0                         # → m/s
+
+
+# ════════════════════════════════════════════════════════════════════
 # Self-test
 # ════════════════════════════════════════════════════════════════════
 

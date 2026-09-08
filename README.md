@@ -75,7 +75,7 @@ This dataset contains **real historical TLE observations** for 15 satellites spa
 
 ```
 OrbitGNN/
-├── physics.py            # Two-body + J2 orbital propagator
+├── physics.py            # Two-body + J2 orbital propagator + Δv estimation
 ├── dataset.py            # Real TLE loader + synthetic fallback
 ├── model.py              # OrbitGNN architecture
 ├── train.py              # Training + evaluation + baselines
@@ -83,16 +83,21 @@ OrbitGNN/
 ├── tests/
 │   ├── test_physics.py   # 30 unit tests for physics module
 │   ├── test_dataset.py   # 70 unit tests for data pipeline
-│   └── test_graph.py     # 22 unit tests for graph construction
+│   ├── test_graph.py     # 22 unit tests for graph construction
+│   └── test_model.py     # 35 unit tests for model components
+├── .github/
+│   └── workflows/
+│       └── tests.yml     # GitHub Actions CI (Python 3.10/3.11/3.12)
 ├── results/
 │   ├── validation/       # Scientific validation outputs
 │   │   ├── seed_results.csv
 │   │   ├── ablation_results.csv
 │   │   ├── baseline_results.csv
 │   │   ├── event_detection_results.csv
+│   │   ├── per_satellite_results.csv
 │   │   ├── error_analysis.md
 │   │   ├── final_report.md
-│   │   └── *.png         # Plots
+│   │   └── *.png         # 8 plots
 │   └── *.png             # Training run plots
 ├── requirements.txt
 └── LICENSE
@@ -139,11 +144,11 @@ python run_experiments.py \
 # All outputs saved to results/validation/
 ```
 
-### Tests (122 tests, all pass)
+### Tests (157 tests, all pass)
 
 ```bash
-python -m pytest tests/ -v
-python physics.py     # Physics self-test
+python -m pytest tests/ -v      # runs all 157 tests (physics + dataset + graph + model)
+python physics.py                # physics self-test (also runs in CI)
 ```
 
 ---

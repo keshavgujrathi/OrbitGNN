@@ -1050,6 +1050,130 @@ def write_error_analysis(
 
 
 # ════════════════════════════════════════════════════════════════════
+# Per-satellite breakdown
+# ════════════════════════════════════════════════════════════════════
+
+def per_satellite_analysis(
+    data:            dict,
+    per_sat_scores:  np.ndarray,         # (S, n_test_windows)
+    test_timestamps: List[datetime.datetime],
+    threshold:       float,
+    outpath:         Path,
+) -> None:
+    """
+    For each satellite compute and save:
+      - n_manoeuvres in test split
+      - n_detected (within ±72h)
+      - detection_rate
+      - n_false_alarms
+      - fa_per_day
+      - mean_score_at_manoeuvre vs mean_score_nominal
+      - estimated_dv_m_s (median Δv estimate from Δa residuals at manoeuvre windows)
+
+    Saves to per_satellite_results.csv.
+    """
+    from physics import estimate_delta_v_batch
+
+    sat_names   = data["sat_names"]
+    man_ev      = data["maneuver_events"]
+    res         = data["res"]          # (S, T-1, 6) raw residuals
+    T_idx       = data["T_idx"]
+    val_end     = data["val_end"]
+    n_windows   = data["n_windows"]
+    shell_id    = data["shell_id"]
+    eo          = data["eo"]           # (S, T, 6) elements
+
+    SHELL_NAMES = {0: "GEO", 1: "SSO/Polar", 2: "LEO-66°"}
+    TOL_S       = 72 * 3600.0
+
+    ts0 = test_timestamps[0]  if test_timestamps else None
+    ts1 = test_timestamps[-1] if test_timestamps else None
+
+    rows = []
+    for k, name in enumerate(sat_names):
+        sc    = per_sat_scores[k]                   # (n_test_windows,)
+        sh    = SHELL_NAMES.get(int(shell_id[k]), "Other")
+
+        # Manoeuvres in test window
+        man_in_test = [m for m in man_ev.get(name, [])
+                       if ts0 and ts1 and ts0 <= m <= ts1] if ts0 else []
+
+        # Alarm times (clustered)
+        alarm_ts = cluster_alarms(sc, test_timestamps, threshold)
+        alarm_ts_f = [a.timestamp() for a in alarm_ts]
+
+        # Detection: match each manoeuvre to nearest alarm within ±72h
+        n_detected = 0
+        matched    = set()
+        dv_at_det  = []
+        for ev in man_in_test:
+            ev_ts = ev.timestamp()
+            for ai, at in enumerate(alarm_ts_f):
+                if ai in matched: continue
+                if abs(at - ev_ts) <= TOL_S:
+                    n_detected += 1
+                    matched.add(ai)
+                    # Estimate Δv from Δa residual at this window
+                    # Find closest test window to alarm time
+                    closest_w = min(range(len(test_timestamps)),
+                                    key=lambda i: abs(test_timestamps[i].timestamp() - at))
+                    t_res = T_idx[val_end + closest_w] if val_end + closest_w < n_windows else -1
+                    if 0 <= t_res < res.shape[1]:
+                        da = abs(res[k, t_res, 0])     # Δa [km]
+                        a  = eo[k, t_res, 0]            # a  [km]
+                        if a > 0:
+                            dv = estimate_delta_v_batch(np.array([da]), np.array([a]))[0]
+                            dv_at_det.append(float(dv))
+                    break
+
+        n_fa = len(alarm_ts) - n_detected
+        # Test window duration
+        test_days = ((ts1 - ts0).total_seconds() / 86400.0) if (ts0 and ts1) else 1.0
+
+        # Mean anomaly score at manoeuvre windows vs. nominal
+        man_scores, nom_scores = [], []
+        for i, sc_val in enumerate(sc):
+            t_res = T_idx[val_end + i] if val_end + i < n_windows else -1
+            gt    = data["L"][val_end + i][k] if val_end + i < n_windows else 0
+            if gt > 0:
+                man_scores.append(float(sc_val))
+            else:
+                nom_scores.append(float(sc_val))
+
+        rows.append({
+            "satellite":              name,
+            "shell":                  sh,
+            "n_manoeuvres_in_test":   len(man_in_test),
+            "n_detected_72h":         n_detected,
+            "n_missed":               len(man_in_test) - n_detected,
+            "detection_rate":         n_detected / len(man_in_test) if man_in_test else float("nan"),
+            "n_false_alarms":         n_fa,
+            "fa_per_day":             n_fa / max(test_days, 1.0),
+            "mean_score_manoeuvre":   float(np.mean(man_scores))  if man_scores  else float("nan"),
+            "mean_score_nominal":     float(np.mean(nom_scores))  if nom_scores  else float("nan"),
+            "median_dv_estimate_m_s": float(np.median(dv_at_det)) if dv_at_det  else float("nan"),
+        })
+
+    with open(outpath, "w", newline="") as f:
+        keys = list(rows[0].keys()) if rows else []
+        w = csv.DictWriter(f, fieldnames=keys)
+        w.writeheader(); w.writerows(rows)
+    logger.info("Saved %s", outpath)
+
+    # Print table to log
+    logger.info("\n  ── Per-satellite breakdown (±72h tolerance) ──")
+    logger.info("  %-14s %-10s %4s %4s %4s  %6s  %8s  %7s",
+                "Satellite", "Shell", "Man", "Det", "FA", "FA/day", "Score_M", "ΔV(m/s)")
+    for r in rows:
+        dv = f"{r['median_dv_estimate_m_s']:.2f}" if not math.isnan(r["median_dv_estimate_m_s"]) else "  N/A"
+        sm = f"{r['mean_score_manoeuvre']:.3f}"   if not math.isnan(r["mean_score_manoeuvre"])   else "  N/A"
+        logger.info("  %-14s %-10s %4d %4d %4d  %6.2f  %8s  %7s",
+                    r["satellite"], r["shell"],
+                    r["n_manoeuvres_in_test"], r["n_detected_72h"],
+                    r["n_false_alarms"], r["fa_per_day"], sm, dv)
+
+
+# ════════════════════════════════════════════════════════════════════
 # Final scientific report
 # ════════════════════════════════════════════════════════════════════
 
@@ -1465,6 +1589,10 @@ def main(args: argparse.Namespace) -> None:
     write_error_analysis(
         data, best_per_sat, test_ts, best_ev_res, best_thr,
         RESULTS_DIR / "error_analysis.md",
+    )
+    per_satellite_analysis(
+        data, best_per_sat, test_ts, best_thr,
+        RESULTS_DIR / "per_satellite_results.csv",
     )
     write_final_report(
         data, seed_metrics, ablation_results, baseline_res, event_results,
