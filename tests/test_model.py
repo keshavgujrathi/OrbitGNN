@@ -381,22 +381,51 @@ class TestAnomalyScore:
         assert torch.isfinite(score).all()
 
     def test_perfect_forecast_lower_score(self):
-        """If self_forecast == observed (perfect prediction), self-error term = 0."""
+        """Verify that a satellite with a large self-forecast error receives a
+        higher anomaly score than one with a perfect forecast.
+
+        IMPORTANT — anomaly_score uses z-normalisation ACROSS satellites:
+            z(x) = (x - mean(x)) / (std(x) + 1e-6)
+
+        This means:
+        - If ALL sats have the same self-error (e.g. all zero when sf==obs),
+          std([0,0,0,0])=0, so every z-score = 0 — the peer/uncertainty terms
+          dominate and the test becomes meaningless.
+        - To test the self-error component we must:
+          (a) Isolate it: set w_peer=0, w_uncertainty=0.
+          (b) Ensure variance in the batch: make one satellite have a large
+              self-error while the others have zero error. Then z-normalisation
+              correctly identifies the outlier satellite.
+        """
+        torch.manual_seed(7)
         S_t = 4; F_t = 6
+
         obs = torch.randn(S_t, F_t)
-        sf  = obs.clone()          # perfect self-forecast
-        pf  = torch.randn(S_t, F_t)
-        std = torch.ones(S_t, F_t) * 0.01
+        pf  = torch.randn(S_t, F_t)       # not used (w_peer=0)
+        std = torch.ones(S_t, F_t) * 0.01  # not used (w_uncertainty=0)
 
-        score_perfect = anomaly_score(obs, sf, pf, std)
+        # Case A — all satellites have a perfect self-forecast (self-error = 0)
+        sf_good = obs.clone()
 
-        # With bad self-forecast (adds large noise):
-        sf_bad = obs + torch.randn_like(obs) * 10.0
-        score_bad = anomaly_score(obs, sf_bad, pf, std)
+        # Case B — satellite 0 has a very bad self-forecast; others are perfect
+        sf_bad = obs.clone()
+        sf_bad[0] = sf_bad[0] + 100.0     # extreme error for satellite 0 only
 
-        # Mean score should be lower with perfect forecast
-        assert score_perfect.mean() < score_bad.mean(), \
-            "Perfect forecast did not produce lower anomaly score"
+        # Evaluate self-error term in isolation
+        score_good = anomaly_score(obs, sf_good, pf, std,
+                                   w_self=1.0, w_peer=0.0, w_uncertainty=0.0)
+        score_bad  = anomaly_score(obs, sf_bad,  pf, std,
+                                   w_self=1.0, w_peer=0.0, w_uncertainty=0.0)
+
+        # Satellite 0 must score higher when it has a large self-error
+        assert score_bad[0] > score_good[0], (
+            f"Satellite with large self-error did not get a higher score: "
+            f"score_bad[0]={score_bad[0]:.4f}, score_good[0]={score_good[0]:.4f}"
+        )
+        # Satellite 0 must be the most anomalous in the bad case
+        assert score_bad[0] == score_bad.max(), (
+            f"Anomalous satellite (0) is not the highest scorer: {score_bad.tolist()}"
+        )
 
     def test_weights_affect_score(self):
         """w_self, w_peer, w_uncertainty should independently scale each term."""
