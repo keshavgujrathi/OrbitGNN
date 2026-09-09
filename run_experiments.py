@@ -1174,6 +1174,208 @@ def per_satellite_analysis(
 
 
 # ════════════════════════════════════════════════════════════════════
+# Statistical Significance Testing (paired t-test)
+# ════════════════════════════════════════════════════════════════════
+
+def statistical_significance_tests(
+    seed_results:      list,        # list of dicts from multi-seed OrbitGNN run
+    baseline_results:  dict,        # {method: {roc_auc, pr_auc, f1, ...}}
+    outpath:           Path,
+) -> dict:
+    """
+    Paired t-test comparing OrbitGNN (multi-seed) against each baseline.
+
+    Because baselines are deterministic (no random seed), we treat the
+    baseline value as a constant and test whether the OrbitGNN seed
+    distribution is significantly different from it.
+
+    For each metric (ROC-AUC, PR-AUC, F1) and each baseline we compute:
+      H0: mean(OrbitGNN_metric) == baseline_metric
+      Test: one-sample t-test, two-tailed, α=0.05
+
+    Saves: statistical_tests.csv with columns:
+      metric, baseline, baseline_val, orbitgnn_mean, orbitgnn_std,
+      t_statistic, p_value, significant (bool), effect_size (Cohen's d)
+
+    Returns: dict of results for use in final_report.md.
+    """
+    from scipy import stats as scipy_stats
+
+    orbitgnn_roc = [r["roc_auc"] for r in seed_results]
+    orbitgnn_pr  = [r["pr_auc"]  for r in seed_results]
+    orbitgnn_f1  = [r["f1"]      for r in seed_results]
+
+    rows = []
+    for method, bres in baseline_results.items():
+        for metric_name, orbitgnn_vals, baseline_val in [
+            ("roc_auc", orbitgnn_roc, bres["roc_auc"]),
+            ("pr_auc",  orbitgnn_pr,  bres["pr_auc"]),
+            ("f1",      orbitgnn_f1,  bres["f1"]),
+        ]:
+            arr = np.array(orbitgnn_vals, dtype=float)
+            n   = len(arr)
+            mu  = arr.mean()
+            sd  = arr.std(ddof=1) if n > 1 else 0.0
+
+            # One-sample t-test: H0: mean(OrbitGNN) = baseline
+            if sd > 0 and n > 1:
+                t_stat, p_val = scipy_stats.ttest_1samp(arr, popmean=baseline_val)
+            else:
+                t_stat, p_val = 0.0, 1.0
+
+            # Cohen's d: effect size relative to baseline value
+            d = (mu - baseline_val) / (sd + 1e-9) if sd > 0 else 0.0
+
+            rows.append({
+                "metric":          metric_name,
+                "baseline":        method,
+                "baseline_val":    round(float(baseline_val), 6),
+                "orbitgnn_mean":   round(float(mu), 6),
+                "orbitgnn_std":    round(float(sd), 6),
+                "delta":           round(float(mu - baseline_val), 6),
+                "t_statistic":     round(float(t_stat), 4),
+                "p_value":         round(float(p_val), 6),
+                "significant":     bool(p_val < 0.05),
+                "effect_size_d":   round(float(d), 4),
+            })
+
+    with open(outpath, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w.writeheader(); w.writerows(rows)
+    logger.info("Saved %s", outpath)
+
+    # Print readable summary
+    logger.info("\n  ── Statistical Significance Tests (one-sample t-test, α=0.05) ──")
+    logger.info("  %-9s %-17s %-8s %-8s %-8s %-8s %-6s %-4s",
+                "Metric", "Baseline", "Base", "GNN μ", "Δ", "p-val", "d", "Sig?")
+    for r in rows:
+        sig = "✓" if r["significant"] else "✗"
+        logger.info("  %-9s %-17s %-8.4f %-8.4f %-8.4f %-8.4f %-6.3f %s",
+                    r["metric"], r["baseline"],
+                    r["baseline_val"], r["orbitgnn_mean"], r["delta"],
+                    r["p_value"], r["effect_size_d"], sig)
+
+    return {r["baseline"] + "_" + r["metric"]: r for r in rows}
+
+
+# ════════════════════════════════════════════════════════════════════
+# Bootstrap Confidence Intervals
+# ════════════════════════════════════════════════════════════════════
+
+def bootstrap_confidence_intervals(
+    labels:      np.ndarray,    # (N,) binary ground truth
+    scores:      np.ndarray,    # (N,) anomaly scores (best seed)
+    outpath:     Path,
+    n_bootstrap: int = 2000,
+    ci_level:    float = 0.95,
+    seed:        int = 42,
+) -> dict:
+    """
+    Non-parametric bootstrap confidence intervals for ROC-AUC, PR-AUC, F1.
+
+    Procedure:
+      1. Draw n_bootstrap samples (with replacement) of size N from
+         the test set.
+      2. Compute each metric on each bootstrap sample.
+      3. CI = [alpha/2 percentile, 1-alpha/2 percentile] of the distribution.
+
+    This is the BCa (percentile) bootstrap — valid for imbalanced datasets
+    where parametric CI (e.g. DeLong for ROC) has poor coverage.
+
+    Saves: bootstrap_ci.csv with columns:
+      metric, estimate, ci_lower, ci_upper, ci_width, n_bootstrap
+    """
+    rng = np.random.default_rng(seed)
+    N   = len(labels)
+    alpha = 1.0 - ci_level
+
+    _trapz = getattr(np, "trapezoid", None) or np.trapz
+
+    def _roc(y, s):
+        if y.sum() == 0 or y.sum() == len(y): return float("nan")
+        order = np.argsort(s)[::-1]
+        y_s   = y[order]
+        tpr   = np.concatenate([[0], np.cumsum(y_s) / y_s.sum()])
+        fpr   = np.concatenate([[0], np.cumsum(1 - y_s) / (1 - y_s).sum()])
+        return float(_trapz(tpr, fpr))
+
+    def _pr(y, s):
+        if y.sum() == 0: return float("nan")
+        thrs   = np.sort(np.unique(s))[::-1]
+        ps, rs = [], []
+        for thr in thrs:
+            pred = s >= thr
+            tp = (pred & (y == 1)).sum(); fp = (pred & (y == 0)).sum()
+            fn = (y == 1).sum() - tp
+            ps.append(tp / (tp + fp) if (tp + fp) > 0 else 0.0)
+            rs.append(tp / (tp + fn) if (tp + fn) > 0 else 0.0)
+        pairs = sorted(zip(rs, ps)); rs = [p[0] for p in pairs]; ps = [p[1] for p in pairs]
+        return float(_trapz(ps, rs))
+
+    def _f1(y, s):
+        # F1 at best threshold on THIS bootstrap sample
+        best, best_f = 0.0, 0.0
+        for thr in np.unique(s):
+            pred = s >= thr
+            tp = (pred & (y == 1)).sum(); fp = (pred & (y == 0)).sum()
+            fn = (y == 1).sum() - tp
+            p = tp / (tp + fp + 1e-9); r = tp / (tp + fn + 1e-9)
+            f = 2 * p * r / (p + r + 1e-9)
+            if f > best_f: best_f = f; best = thr
+        return float(best_f)
+
+    logger.info("Bootstrap CI: drawing %d samples (N=%d)...", n_bootstrap, N)
+
+    roc_bs, pr_bs, f1_bs = [], [], []
+    for _ in range(n_bootstrap):
+        idx = rng.integers(0, N, size=N)
+        y_b = labels[idx]; s_b = scores[idx]
+        roc_bs.append(_roc(y_b, s_b))
+        pr_bs.append(_pr(y_b, s_b))
+        f1_bs.append(_f1(y_b, s_b))
+
+    lo = alpha / 2 * 100
+    hi = (1 - alpha / 2) * 100
+
+    rows = []
+    for metric, bs_vals, point_est in [
+        ("roc_auc", roc_bs, _roc(labels, scores)),
+        ("pr_auc",  pr_bs,  _pr(labels,  scores)),
+        ("f1",      f1_bs,  _f1(labels,  scores)),
+    ]:
+        arr = np.array([v for v in bs_vals if not math.isnan(v)])
+        if len(arr) == 0:
+            cil, cih = float("nan"), float("nan")
+        else:
+            cil = float(np.percentile(arr, lo))
+            cih = float(np.percentile(arr, hi))
+        rows.append({
+            "metric":      metric,
+            "estimate":    round(float(point_est), 6),
+            "ci_lower":    round(cil, 6),
+            "ci_upper":    round(cih, 6),
+            "ci_width":    round(cih - cil, 6),
+            "ci_level":    ci_level,
+            "n_bootstrap": n_bootstrap,
+        })
+
+    with open(outpath, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w.writeheader(); w.writerows(rows)
+    logger.info("Saved %s", outpath)
+
+    logger.info("\n  ── Bootstrap Confidence Intervals (%d%%, %d samples) ──",
+                int(ci_level * 100), n_bootstrap)
+    logger.info("  %-10s  %-8s  %-8s  %-8s  %-8s",
+                "Metric", "Estimate", "CI Lower", "CI Upper", "Width")
+    for r in rows:
+        logger.info("  %-10s  %-8.4f  %-8.4f  %-8.4f  %-8.4f",
+                    r["metric"], r["estimate"], r["ci_lower"], r["ci_upper"], r["ci_width"])
+
+    return {r["metric"]: r for r in rows}
+
+
+# ════════════════════════════════════════════════════════════════════
 # Final scientific report
 # ════════════════════════════════════════════════════════════════════
 
@@ -1593,6 +1795,22 @@ def main(args: argparse.Namespace) -> None:
     per_satellite_analysis(
         data, best_per_sat, test_ts, best_thr,
         RESULTS_DIR / "per_satellite_results.csv",
+    )
+    # ── Statistical significance tests ────────────────────────────────
+    stat_results = statistical_significance_tests(
+        seed_metrics, baseline_res,
+        RESULTS_DIR / "statistical_tests.csv",
+    )
+    # ── Bootstrap 95% CI on best-seed scores ──────────────────────────
+    best_seed_idx = int(np.argmax(roc_vals))
+    best_scores   = np.array(seed_results_raw[best_seed_idx]["scores"])
+    best_labels   = np.array(seed_results_raw[best_seed_idx]["labels"])
+    boot_results  = bootstrap_confidence_intervals(
+        best_labels, best_scores,
+        RESULTS_DIR / "bootstrap_ci.csv",
+        n_bootstrap=2000,
+        ci_level=0.95,
+        seed=42,
     )
     write_final_report(
         data, seed_metrics, ablation_results, baseline_res, event_results,
