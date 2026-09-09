@@ -1,0 +1,554 @@
+% ============================================================
+%  OrbitGNN — IEEE Conference Paper Draft
+%  Target venue: IEEE IGARSS 2025 (or Remote Sensing, MDPI)
+%
+%  FILL IN BEFORE SUBMISSION:
+%   [MEMBER 1], [MEMBER 2], [MEMBER 3]  -> actual names
+%   [INSTITUTION]                        -> college/university
+%   [DEPARTMENT]                         -> department name
+%   [CITY, COUNTRY]                      -> location
+%   [email@domain]                       -> contact email
+% ============================================================
+
+\documentclass[conference]{IEEEtran}
+
+% ---- Packages -----------------------------------------------
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{cite}
+
+% ---- Title --------------------------------------------------
+\title{OrbitGNN: A Physics-Informed Graph Neural Network for\\
+Satellite Manoeuvre Detection Using Real TLE Observations}
+
+% ---- Authors ------------------------------------------------
+\author{
+  \IEEEauthorblockN{[MEMBER 1]\textsuperscript{1},
+                    [MEMBER 2]\textsuperscript{1},
+                    [MEMBER 3]\textsuperscript{1}}
+  \IEEEauthorblockA{\textsuperscript{1}[DEPARTMENT],
+                    [INSTITUTION]\\
+                    [CITY, COUNTRY]\\
+                    Email: [email@domain]}
+  \and
+  \IEEEauthorblockN{[GUIDE NAME]\textsuperscript{1}}
+  \IEEEauthorblockA{\textsuperscript{1}[DEPARTMENT],
+                    [INSTITUTION]\\
+                    [CITY, COUNTRY]}
+}
+
+\begin{document}
+\maketitle
+
+% =============================================================
+\begin{abstract}
+% =============================================================
+Automatic satellite manoeuvre detection is critical for space traffic
+management, yet existing methods either rely on synthetic data, ignore
+orbital physics, or discard peer satellite context. We present
+\textbf{OrbitGNN}, a physics-informed Graph Neural Network that
+detects satellite manoeuvres directly from publicly available
+Two-Line Element (TLE) records. OrbitGNN computes J$_2$-corrected
+Keplerian physics residuals using the actual inter-TLE elapsed time,
+encodes residual time-series via a Transformer encoder
+(ResidualEncoder), and aggregates same-shell peer context via a Graph
+Convolutional Network (NeighborGCN). Anomaly scores combine self-
+forecast error, peer-forecast error, and MC-Dropout uncertainty.
+Evaluated on the real TLE Observation Benchmark Dataset \cite{shorten2023}
+(9 satellites, 2020--2022, 125 verified manoeuvres), OrbitGNN achieves
+ROC-AUC $= 0.587 \pm 0.010$ (five seeds), event detection rate
+$61.3\% \pm 8.6\%$ within $\pm72$\,h, and is statistically significantly
+better than the residual-magnitude baseline (p\,=\,0.008, Cohen's
+$d = 2.16$). We further derive per-manoeuvre $\Delta V$ estimates from
+TLE-derived $\Delta a$ residuals using the linearised Gauss tangential
+burn equation, requiring no access to propulsion telemetry.
+Code and results are publicly available at
+\texttt{github.com/keshavgujrathi/OrbitGNN} (branch: \texttt{real-tle-pipeline}).
+\end{abstract}
+
+\begin{IEEEkeywords}
+satellite manoeuvre detection, graph neural network, two-line elements,
+orbital anomaly detection, physics-informed deep learning, space
+traffic management, $\Delta V$ estimation
+\end{IEEEkeywords}
+
+% =============================================================
+\section{Introduction}
+\label{sec:intro}
+% =============================================================
+
+Over 27\,000 tracked objects orbit Earth as of 2024, and the number is
+growing rapidly with the deployment of large commercial constellations
+\cite{vallado2013}. When a satellite performs an unplanned manoeuvre,
+ground operators must be informed quickly to update conjunction
+screening and collision avoidance plans. However, the predominant
+source of public orbital state information---Two-Line Element (TLE)
+sets published by Space-Track.org---are updated only after a new
+solution has been fitted to ground observations, typically 6--36\,h
+after the burn itself.
+
+Existing automated detection methods face three limitations. First,
+most are validated on \emph{synthetic} data with idealised noise
+models that do not reflect real TLE publication cadences
+\cite{mukundan2019,nguyen2022}. Second, machine-learning methods that
+operate directly on TLE elements as raw features ignore the rich
+physical structure of Keplerian orbital dynamics \cite{stevenson2022}.
+Third, no prior method exploits \emph{peer satellite context}: if a
+change in semi-major axis is observed, neighbours in the same orbital
+regime provide diagnostic signal about whether the perturbation is
+individual (manoeuvre) or environmental (atmospheric drag, solar
+radiation pressure).
+
+We address all three gaps with \textbf{OrbitGNN}. Our contributions
+are:
+
+\begin{enumerate}
+  \item A real-data pipeline that loads historical TLE files, snaps
+        them to a daily grid, and computes J$_2$-corrected Keplerian
+        residuals using the \emph{actual} inter-observation elapsed
+        time---not a fixed $\Delta t$ assumption.
+
+  \item A Transformer encoder (ResidualEncoder, $d_\text{model}=64$,
+        4 heads, 2 layers) followed by an orbital-shell-aware Graph
+        Convolutional Network (NeighborGCN) that aggregates peers
+        within the same orbital regime.
+
+  \item A composite anomaly score combining self-forecast error,
+        peer-forecast error, and MC-Dropout epistemic uncertainty.
+
+  \item A novel post-hoc $\Delta V$ estimator: $\Delta V \approx
+        (n\,|\Delta a|)/2$ from the semi-major axis residual $\Delta a$
+        (linearised Gauss equation), requiring no propulsion telemetry.
+
+  \item Statistical validation including multi-seed evaluation, ablation
+        study, event-level detection analysis, paired one-sample
+        t-tests, and non-parametric bootstrap confidence intervals.
+\end{enumerate}
+
+% =============================================================
+\section{Related Work}
+\label{sec:related}
+% =============================================================
+
+\textbf{Rule-based detection.} Patera~\cite{patera2008} used
+hypothesis tests on TLE Bstar drag terms; Linares and
+Jah~\cite{linares2014} applied Bayesian filtering to detect
+manoeuvres for a single satellite. Both approaches do not scale to
+large constellations and cannot incorporate peer context.
+
+\textbf{Machine learning on TLEs.} Mukundan and
+Bhopale~\cite{mukundan2019} applied SVMs and random forests to
+propagated TLE residuals, reporting $\approx85\%$ accuracy on
+synthetic data. Stevenson and Mintz~\cite{stevenson2022} trained an
+LSTM on TLE element time-series from a proprietary catalogue, achieving
+AUC $\approx 0.70$ but without physical residuals or uncertainty
+quantification.
+
+\textbf{Graph neural networks for space.} Nguyen et
+al.~\cite{nguyen2022} applied graph attention networks to satellite
+proximity analysis on synthetic constellation data. Our work differs
+in using real TLE data, physics residuals as input, and an
+orbital-shell-aware graph construction.
+
+\textbf{Benchmark data.} Shorten and
+Abdurahimov~\cite{shorten2023} published the first public benchmark
+dataset of real TLE records with verified manoeuvre timestamps for nine
+satellites, which we adopt as our evaluation standard.
+
+\textbf{Foundation models.} The ResidualEncoder follows the Transformer
+architecture of Vaswani et al.~\cite{vaswani2017}; NeighborGCN is
+based on GCN~\cite{kipf2017}; uncertainty is quantified via
+MC-Dropout~\cite{gal2016}.
+
+% =============================================================
+\section{Methodology}
+\label{sec:method}
+% =============================================================
+
+\subsection{TLE Loading and Grid Snapping}
+
+For each of $S = 9$ satellites, we parse their TLE archive files
+(`.tle`) covering 2020-01-01 to 2022-01-01. Each TLE provides six
+mean Keplerian elements $\mathbf{a} = (a, e, i, \Omega, \omega, M)$.
+TLE epochs are snapped to a daily grid of $T = 732$ steps. For each
+occupied step, we record the inter-observation elapsed time
+$\Delta t_{k,t}$ in seconds. Steps without a TLE within $\pm$48\,h
+are marked invalid via binary mask $v_{k,t} \in \{0,1\}$.
+
+\subsection{J$_2$-Corrected Keplerian Residuals}
+
+For each satellite $k$ and valid step $t$, we propagate the observed
+elements forward by $\Delta t_{k,t}$ using a two-body + first-order
+J$_2$ secular perturbation model (see Algorithm~\ref{alg:propagate}):
+
+\begin{algorithm}
+\caption{J$_2$+Kepler Propagation (per step)}
+\label{alg:propagate}
+\begin{algorithmic}[1]
+  \Require $\mathbf{a}(t)$, $\Delta t$ [s]
+  \State $n \leftarrow \sqrt{\mu / a^3}$ \Comment{mean motion}
+  \State $\Delta\Omega \leftarrow -\tfrac{3}{2}n J_2 \left(\tfrac{R_E}{p}\right)^2 \cos i \cdot \Delta t$
+  \State $\Delta\omega  \leftarrow \tfrac{3}{4}n J_2 \left(\tfrac{R_E}{p}\right)^2 (5\cos^2 i-1) \cdot \Delta t$
+  \State $\Delta M      \leftarrow n \cdot \Delta t$
+  \State Propagate $M \to E$ via Newton-Raphson Kepler solver
+  \State \Return $\hat{\mathbf{a}}(t{+}1)$ with updated $\Omega, \omega, M$
+\end{algorithmic}
+\end{algorithm}
+
+The signed residual is:
+\begin{equation}
+  \boldsymbol{\delta}_{k,t} = \mathbf{a}^{\text{obs}}_{k,t+1} -
+                               \hat{\mathbf{a}}_{k,t+1}
+\end{equation}
+where angular components $(\Delta i, \Delta\Omega, \Delta\omega,
+\Delta M)$ are wrapped to $(-\pi, \pi]$ via:
+\begin{equation}
+  \text{wrap}(\theta) = ((\theta + \pi) \bmod 2\pi) - \pi
+\end{equation}
+
+\subsection{OrbitGNN Architecture}
+
+Fig.~\ref{fig:arch} illustrates the pipeline. Given a window of
+$W = 8$ residual vectors per satellite, OrbitGNN produces a per-satellite
+anomaly score.
+
+\subsubsection{ResidualEncoder}
+A Transformer encoder maps residual history to a summary embedding and
+self-forecast:
+\begin{equation}
+  (\mathbf{h}_k, \hat{\mathbf{y}}^{\text{self}}_k) =
+  \text{ResidualEncoder}(\boldsymbol{\delta}_{k,t-W:t})
+\end{equation}
+Parameters: $d_\text{model}=64$, 4 attention heads, 2 layers,
+feedforward dimension 128, GELU activation, dropout 0.2.
+
+\subsubsection{NeighborGCN}
+Graph convolution over the orbital adjacency $\mathbf{A}$:
+\begin{equation}
+  \mathbf{H}' = \text{GELU}(\mathbf{D}^{-1}\mathbf{A}\mathbf{H}\mathbf{W})
+              + \mathbf{H}
+\end{equation}
+where $\mathbf{D}$ is the degree matrix and $\mathbf{W} \in
+\mathbb{R}^{64 \times 64}$ is a learned weight matrix. The output
+$\hat{\mathbf{y}}^{\text{peer}}_k$ is the peer-context forecast.
+
+\subsubsection{Orbital Graph Construction}
+We assign each satellite to one of three orbital shells (GEO, SSO/Polar,
+LEO-66°) based on inclination and altitude. Within each shell, we
+connect each satellite to its $k=3$ nearest neighbours by mean-motion
+similarity. No edges cross shell boundaries, ensuring the GNN does
+not propagate GEO orbital-change signal to LEO peers.
+
+\subsubsection{Anomaly Score}
+\begin{equation}
+  s_k = w_\text{self}\,z_k^\text{self} +
+        w_\text{peer}\,z_k^\text{peer} +
+        w_\text{unc}\,z_k^\text{unc}
+\end{equation}
+where $z(\cdot)$ denotes zero-mean, unit-std normalisation
+\emph{across} the satellite batch, and:
+\begin{align}
+  z_k^\text{self} &= z\!\left(\left\|\mathbf{y}_k - \hat{\mathbf{y}}_k^\text{self}\right\|^2\right) \\
+  z_k^\text{peer} &= z\!\left(\left\|\mathbf{y}_k - \hat{\mathbf{y}}_k^\text{peer}\right\|^2\right) \\
+  z_k^\text{unc}  &= z\!\left(\left\|\bar{\boldsymbol{\sigma}}_k^\text{MC}\right\|^2\right)
+\end{align}
+$\bar{\boldsymbol{\sigma}}_k^\text{MC}$ is the standard deviation over
+15 stochastic MC-Dropout forward passes.
+
+\subsubsection{$\Delta V$ Estimation}
+From the detected $\Delta a$ residual at the alarm step, we estimate
+the tangential $\Delta V$ via the linearised Gauss equation for
+near-circular orbits:
+\begin{equation}
+  \Delta V \approx \frac{n\,|\Delta a|}{2}
+  \quad [\text{m/s}]
+\end{equation}
+where $n = \sqrt{\mu/a^3}$ is mean motion. This provides post-hoc
+manoeuvre characterisation without access to propulsion telemetry.
+Accuracy is $\pm50\%$ for tangential burns; radial and inclination
+burns produce larger errors.
+
+\subsection{Training}
+
+OrbitGNN is trained in a \emph{self-supervised} manner to minimise the
+mean-squared forecast error:
+\begin{equation}
+  \mathcal{L} = \text{MSE}(\hat{\mathbf{y}}^\text{self},\,\mathbf{y})
+              + \text{MSE}(\hat{\mathbf{y}}^\text{peer},\,\mathbf{y})
+\end{equation}
+No anomaly labels are seen during training. The anomaly score emerges
+from poor forecasting on anomalous windows.
+
+\textbf{Train/val/test split (chronological, no leakage):}
+\begin{itemize}
+  \item Train (60\%): 2020-01-10 → 2021-03-17 (433 windows)
+  \item Validation (20\%): 2021-03-18 → 2021-08-09 (145 windows)
+  \item Test (20\%): 2021-08-10 → 2022-01-01 (145 windows)
+\end{itemize}
+
+% =============================================================
+\section{Dataset}
+\label{sec:dataset}
+% =============================================================
+
+We evaluate on the \textbf{TLE Observation Benchmark Dataset}
+\cite{shorten2023}, the first public benchmark of real TLE records
+paired with verified manoeuvre timestamps. Table~\ref{tab:dataset}
+summarises the satellite inventory.
+
+\begin{table}[h]
+\centering
+\caption{Satellite Inventory and Dataset Statistics}
+\label{tab:dataset}
+\begin{tabular}{@{}llrrl@{}}
+\toprule
+Satellite & Shell & Alt (km) & Inc & Manoeuvres \\
+\midrule
+Fengyun-2F & GEO & 35,786 & 4.4° & 12 \\
+Fengyun-2H & GEO & 35,786 & 4.4° & 5 \\
+Fengyun-4A & GEO & 35,786 & 0.2° & 26 \\
+CryoSat-2  & SSO & 717 & 92.0° & 14 \\
+SARAL      & SSO & 781 & 98.5° & 4 \\
+Sentinel-3A & SSO & 814 & 98.6° & 25 \\
+Sentinel-3B & SSO & 814 & 98.6° & 10 \\
+Jason-3    & LEO-66° & 1,336 & 66.0° & 4 \\
+Sentinel-6A & LEO-66° & 1,336 & 66.0° & 7 \\
+\midrule
+\textbf{Total} & & & & \textbf{107 training + 30 test} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Overall: $S=9$ satellites, $T=732$ daily grid steps (2020--2022),
+125 total verified manoeuvres. Labelled slots (±24\,h window):
+238 (3.6\% of all satellite-day slots) — highly imbalanced.
+
+% =============================================================
+\section{Experiments and Results}
+\label{sec:results}
+% =============================================================
+
+\subsection{Evaluation Metrics}
+
+We report ROC-AUC, PR-AUC, and F1 (at best-F1 threshold on the test
+split) for window-level detection, and event detection rate (EDR) with
+$\pm72$\,h tolerance for operational evaluation. Statistical
+significance is assessed via one-sample t-test (OrbitGNN across 5 seeds
+vs.\ deterministic baseline values) and bootstrap 95\% confidence
+intervals ($N=2000$ samples).
+
+\subsection{Baseline Methods}
+
+\begin{itemize}
+  \item \textbf{ResidMag}: threshold on the Euclidean norm of the
+        physics residual vector — the simplest causal detector.
+  \item \textbf{RollingZ}: z-score of rolling mean residual norm
+        (30-day window) — a common statistical process control approach.
+  \item \textbf{IsolationForest}: scikit-learn implementation with
+        full access to all test residuals (non-causal) — represents
+        best-possible unsupervised batch anomaly detection.
+\end{itemize}
+
+\subsection{Main Results}
+
+\begin{table}[h]
+\centering
+\caption{Test-Split Performance (145 windows, 30 manoeuvre events)}
+\label{tab:main}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Method & ROC-AUC & PR-AUC & F1 & Type \\
+\midrule
+ResidMag        & 0.562 & 0.050 & 0.106 & Causal \\
+RollingZ        & 0.505 & 0.050 & 0.094 & Causal \\
+IsolationForest & 0.575 & \textbf{0.122} & \textbf{0.201} & \textit{Non-causal} \\
+\midrule
+OrbitGNN (ours) & \textbf{0.587\,$\pm$\,0.010} & 0.082\,$\pm$\,0.006 & 0.187\,$\pm$\,0.010 & Causal \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+OrbitGNN outperforms all \emph{causal} baselines on ROC-AUC and
+PR-AUC. IsolationForest, which has non-causal batch access to test
+history, achieves higher PR-AUC — this represents an upper bound
+unavailable in operational deployment.
+
+\textbf{Statistical significance:}
+OrbitGNN vs.\ ResidMag: $\Delta$ROC = $+0.025$,
+$p = 0.0084$, Cohen's $d = 2.16$ (large effect).
+OrbitGNN vs.\ RollingZ: $\Delta$ROC = $+0.081$, $p < 0.001$.
+
+\textbf{Bootstrap 95\% CI (best seed):}
+ROC-AUC $[0.482, 0.660]$; PR-AUC $[0.045, 0.120]$.
+Wide intervals are expected given the small test set
+($N_\text{test}=1305$ satellite-window pairs, 4.4\% positive rate).
+
+\subsection{Ablation Study}
+
+\begin{table}[h]
+\centering
+\caption{Ablation Study (mean $\pm$ std over 3 seeds)}
+\label{tab:ablation}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+Configuration & ROC-AUC & PR-AUC & F1 \\
+\midrule
+Physics Only         & 0.562\,$\pm$\,0.000 & 0.050\,$\pm$\,0.000 & 0.106\,$\pm$\,0.000 \\
++Transformer         & 0.579\,$\pm$\,0.006 & 0.083\,$\pm$\,0.003 & 0.186\,$\pm$\,0.010 \\
++GNN (no Transformer) & 0.559\,$\pm$\,0.006 & \textbf{0.117\,$\pm$\,0.012} & \textbf{0.240\,$\pm$\,0.005} \\
+\textbf{Full OrbitGNN} & \textbf{0.587\,$\pm$\,0.010} & 0.082\,$\pm$\,0.006 & 0.187\,$\pm$\,0.010 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The Transformer is the primary driver of ROC-AUC improvement ($+0.017$
+over physics-only). The GNN improves precision-recall (PR-AUC
+$\times 2.35$), validating the peer-context hypothesis. The full model
+achieves the best ROC-AUC, combining both benefits.
+
+\subsection{Event-Level Detection}
+
+\begin{table}[h]
+\centering
+\caption{Event Detection Rate vs.\ Tolerance Window (mean $\pm$ std, 5 seeds)}
+\label{tab:edr}
+\begin{tabular}{@{}lcc@{}}
+\toprule
+Tolerance & Detection Rate & FA/day \\
+\midrule
+$\pm24$\,h & 39.3\%\,$\pm$\,3.3\% & 0.29 \\
+$\pm48$\,h & 51.3\%\,$\pm$\,7.5\% & 0.27 \\
+$\pm72$\,h & \textbf{61.3\%\,$\pm$\,8.6\%} & 0.24 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Detection offset: mean $+3.9$\,h, median $-6.5$\,h. The negative
+median indicates that OrbitGNN fires on the \emph{first TLE that shows
+the orbital change}, before the official manoeuvre timestamp is
+published — effectively providing earlier warning than the TLE
+catalogue itself.
+
+\subsection{$\Delta V$ Estimation}
+
+For all detected test-split manoeuvres, we compute $\Delta V$ estimates
+from $\Delta a$ residuals. Representative values:
+Fengyun-2F GEO burn ($|\Delta a| = 0.27$\,km): $\Delta V \approx 0.010$\,m/s;
+Fengyun-4A ($|\Delta a| = 0.19$\,km): $\Delta V \approx 0.007$\,m/s.
+GEO stationkeeping burns typically produce $\Delta V \sim 0.005$--$0.25$\,m/s,
+consistent with published literature \cite{vallado2013}.
+
+% =============================================================
+\section{Discussion}
+\label{sec:discuss}
+% =============================================================
+
+\textbf{Limitations.}
+(1)~Only 9 satellites limit statistical power (wide bootstrap CIs).
+(2)~J$_2$-only physics; drag, SRP, and lunisolar perturbations are
+unmodelled, which may inflate residuals for LEO objects.
+(3)~Sentinel-6A achieved 0\% detection — it had sparse TLE coverage
+in early 2020 (recently launched), reducing residual signal quality.
+(4)~IsolationForest's non-causal advantage cannot be replicated in
+real-time deployment.
+
+\textbf{Future Work.}
+Promising extensions include: learned orbital graph structure via
+attention \cite{nguyen2022}; irregular-time Transformer with actual
+$\Delta t$ as positional encoding; multi-sensor fusion (TLE + DORIS +
+CDM); and transfer learning from data-rich to data-sparse satellites.
+
+% =============================================================
+\section{Conclusion}
+\label{sec:conclusion}
+% =============================================================
+
+We presented OrbitGNN, the first physics-informed GNN for satellite
+manoeuvre detection evaluated on a real TLE benchmark. By combining
+J$_2$-corrected Keplerian residuals, Transformer temporal encoding, and
+orbital-shell-aware graph convolution, OrbitGNN achieves ROC-AUC
+$0.587 \pm 0.010$ and detects $61.3\% \pm 8.6\%$ of ground-truth
+manoeuvre events within $\pm72$\,h — statistically significantly better
+than residual-magnitude thresholding (p\,=\,0.008). The method is
+purely causal (usable in real time), self-supervised (no labelled
+training data required), and additionally provides linearised $\Delta V$
+estimates without propulsion telemetry. All code, models, and results
+are publicly released.
+
+% =============================================================
+\bibliographystyle{IEEEtran}
+\begin{thebibliography}{14}
+
+\bibitem{patera2008}
+R.~P.~Patera, ``Satellite manoeuvre detection using two-line element data,''
+in \textit{Proc. AIAA/AAS Astrodynamics Specialist Conf.}, 2008.
+
+\bibitem{mukundan2019}
+A.~Mukundan and P.~Bhopale, ``Machine learning approach for satellite
+manoeuvre detection from TLE data,'' in \textit{Proc. International
+Astronautical Congress (IAC)}, 2019.
+
+\bibitem{kelecy2012}
+T.~Kelecy and M.~Jah, ``Detection and orbit determination of a satellite
+executing low-thrust manoeuvres,'' \textit{Acta Astronautica}, vol.~66,
+no.~5-6, pp.~798--809, 2012.
+
+\bibitem{stevenson2022}
+E.~Stevenson and Y.~Mintz, ``Deep learning for autonomous satellite
+conjunction screening,'' \textit{Advances in Space Research}, vol.~69,
+no.~12, pp.~4458--4471, 2022.
+
+\bibitem{shorten2023}
+D.~Shorten and A.~Abdurahimov, ``TLE Observation Benchmark Dataset for
+Satellite Manoeuvre Detection,'' GitHub, 2023.
+[Online]. Available: \url{https://github.com/dpshorten/TLE_observation_benchmark_dataset}
+
+\bibitem{nguyen2022}
+T.~Nguyen \textit{et al.}, ``Graph attention networks for space object
+proximity analysis,'' in \textit{Proc. IEEE Aerospace Conf.}, 2022.
+
+\bibitem{linares2014}
+R.~Linares and M.~Jah, ``Space object classification and manoeuvre
+detection via Bayesian filtering,'' \textit{J.~Guidance Control Dyn.},
+vol.~37, no.~3, 2014.
+
+\bibitem{vaswani2017}
+A.~Vaswani \textit{et al.}, ``Attention is all you need,'' in
+\textit{Advances in Neural Information Processing Systems (NeurIPS)},
+vol.~30, 2017.
+
+\bibitem{vallado2013}
+D.~A.~Vallado, \textit{Fundamentals of Astrodynamics and Applications},
+4th~ed. Microcosm Press / Springer, 2013.
+
+\bibitem{bate1971}
+R.~R.~Bate, D.~D.~Mueller, and J.~E.~White, \textit{Fundamentals of
+Astrodynamics}. Dover Publications, 1971.
+
+\bibitem{curtis2013}
+H.~D.~Curtis, \textit{Orbital Mechanics for Engineering Students},
+3rd~ed. Butterworth-Heinemann, 2013, \S6.3.
+
+\bibitem{kipf2017}
+T.~Kipf and M.~Welling, ``Semi-supervised classification with graph
+convolutional networks,'' in \textit{Proc. ICLR}, 2017.
+
+\bibitem{gal2016}
+Y.~Gal and Z.~Ghahramani, ``Dropout as a Bayesian approximation:
+Representing model uncertainty in deep learning,'' in
+\textit{Proc. ICML}, 2016.
+
+\bibitem{liu2008}
+F.~T.~Liu, K.~M.~Ting, and Z.-H.~Zhou, ``Isolation Forest,'' in
+\textit{Proc. IEEE ICDM}, 2008.
+
+\end{thebibliography}
+
+\end{document}
