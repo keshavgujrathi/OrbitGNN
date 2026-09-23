@@ -1,0 +1,11 @@
+Method,Type,Labels,ROC-AUC,PR-AUC,F1,Precision,Recall,MCC,Bal.Acc
+ResidMag (Physics),Causal unsup,No,0.411,0.045,0.074,0.135,0.05,0.018,0.512
+RollingZ (Stat.),Causal unsup,No,0.489,0.048,0.087,0.055,0.19,0.012,0.513
+LSTM-Autoencoder,Causal unsup,No,0.501,0.059,0.135,0.143,0.129,0.087,0.557
+IsolationForest*,Non-causal,No,0.456,0.042,0.082,0.046,0.379,0.01,0.51
+LSTM,Causal supvsd,YES,0.634,0.149,0.139,0.44,0.086,0.158,0.54
+1D-CNN,Causal supvsd,YES,0.625,0.159,0.165,0.298,0.115,0.152,0.552
+Random Forest,Causal supvsd,YES,0.701,0.153,0.258,0.213,0.328,0.222,0.618
+XGBoost,Causal supvsd,YES,0.705,0.247,0.265,0.26,0.276,0.242,0.601
+OrbitGNN v1 orig.,Causal self-s,No,0.591,0.169,0.234,0.165,0.397,0.207,0.594
+OrbitGNN optimised,Causal self-s,No,0.588,0.176,0.305,0.198,0.543,0.302,0.637
