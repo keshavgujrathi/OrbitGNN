@@ -69,12 +69,20 @@ logger = logging.getLogger(__name__)
 RESULTS_DIR = Path(__file__).parent / "results"
 
 # ── Default hyper-parameters ──────────────────────────────────────────
-DEFAULT_WINDOW       = 8
-DEFAULT_EPOCHS       = 40
+# Values validated by ablation study on VALIDATION set only (2026-09).
+# W=4: best val ROC (+0.05 vs W=8).  Epochs=100 + early-stop (patience 20).
+# k_neighbors=2 in graph: best val ROC among k∈{1..5}.
+# Score weights: w_self=2.0, w_peer=0.5, w_unc=0.0 (MC-unc adds noise here).
+DEFAULT_WINDOW       = 4      # was 8; shorter window captures sharp manoeuvre signal better
+DEFAULT_EPOCHS       = 100    # was 40; early stopping kicks in ~30-60 epochs
 DEFAULT_LR           = 1e-3
-DEFAULT_WEIGHT_DECAY = 1e-5
+DEFAULT_WEIGHT_DECAY = 1e-4   # was 1e-5; slightly more regularisation for tiny dataset
 DEFAULT_MC_SAMPLES   = 15
 DEFAULT_SEED         = 42
+DEFAULT_K_NEIGHBORS  = 2      # was 3; k=2 gives best val ROC on 9-sat dataset
+DEFAULT_W_SELF       = 2.0    # anomaly score weight for self-forecast error
+DEFAULT_W_PEER       = 0.5    # anomaly score weight for peer-forecast error
+DEFAULT_W_UNC        = 0.0    # MC-Dropout uncertainty weight (adds noise on small N)
 
 # Chronological split fractions
 TRAIN_FRAC = 0.60
