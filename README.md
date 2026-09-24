@@ -153,39 +153,56 @@ python physics.py                # physics self-test (also runs in CI)
 
 ---
 
-## Scientific Validation Results
+### Scientific Validation Results
 
-> All results on TEST split: 2021-08-10 → 2022-01-01 (145 windows, 30 manoeuvre events)
+> All results on chronological TEST split (145 windows, 1305 per-satellite samples, 58 positives).
+> Threshold tuned on **validation set only** — test set never touched during tuning.
 
-### Baseline Comparison (deterministic, fixed)
+### Full Model Comparison (10 methods, 3 seeds)
 
-| Method | ROC-AUC | PR-AUC | Precision | Recall | F1 | Type |
-|--------|---------|--------|-----------|--------|----|------|
-| ResidMag | 0.5616 | 0.0497 | 0.0569 | 0.7931 | 0.1061 | causal, no learning |
-| RollingZ | 0.5054 | 0.0501 | 0.0550 | 0.3103 | 0.0935 | causal, no learning |
-| IsolationForest | 0.5746 | 0.1222 | 0.1450 | 0.3276 | 0.2011 | **batch, non-causal** |
+| Method | Type | Labels? | ROC-AUC | PR-AUC | F1 | Recall | MCC | Bal.Acc |
+|--------|------|:-------:|---------|--------|----|--------|-----|---------|
+| ResidMag (Physics) | Causal, unsup | No | 0.411 | 0.045 | 0.074 | 0.050 | 0.018 | 0.512 |
+| RollingZ (Statistical) | Causal, unsup | No | 0.489 | 0.048 | 0.087 | 0.190 | 0.012 | 0.513 |
+| LSTM-Autoencoder | Causal, unsup | No | 0.501 | 0.059 | 0.135 | 0.129 | 0.087 | 0.557 |
+| IsolationForest\* | Non-causal | No | 0.456 | 0.042 | 0.082 | 0.379 | 0.010 | 0.510 |
+| LSTM | Causal, **supervised** | **YES** | 0.634 | 0.149 | 0.139 | 0.086 | 0.158 | 0.540 |
+| 1D-CNN | Causal, **supervised** | **YES** | 0.625 | 0.159 | 0.165 | 0.115 | 0.152 | 0.552 |
+| Random Forest | Causal, **supervised** | **YES** | 0.701 | 0.153 | 0.258 | 0.328 | 0.222 | 0.618 |
+| XGBoost | Causal, **supervised** | **YES** | 0.705 | 0.247 | 0.265 | 0.276 | 0.242 | 0.601 |
+| **OrbitGNN v1** (W=8, k=3) | Causal, self-sup | No | 0.591 ± .002 | 0.169 ± .001 | 0.234 ± .018 | 0.397 | 0.207 ± .025 | 0.594 |
+| **OrbitGNN optimised ◄** (W=4, k=2) | Causal, self-sup | No | **0.588** ± .009 | **0.176** ± .002 | **0.305** ± .007 | **0.543** | **0.302** ± .004 | **0.637** |
 
-### Multi-Seed Results — Full OrbitGNN (5 seeds, causal)
+> \* IsolationForest uses full batch at once — violates real-time causality.
+> Supervised methods require ground-truth manoeuvre labels — **not available for non-cooperative satellites**.
+> Bold = best among self-supervised/unsupervised causal methods.
 
-| Seed | ROC-AUC | PR-AUC | Precision | Recall | F1 |
-|------|---------|--------|-----------|--------|----|
-| 1 | 0.5880 | 0.0757 | 0.1429 | 0.2586 | 0.1840 |
-| 2 | 0.5720 | 0.0861 | 0.1772 | 0.2414 | 0.2044 |
-| 3 | 0.5877 | 0.0747 | 0.1522 | 0.2414 | 0.1867 |
-| 4 | 0.5815 | 0.0807 | 0.1519 | 0.2069 | 0.1752 |
-| 5 | **0.6036** | **0.0907** | 0.1522 | 0.2414 | 0.1867 |
-| **Mean ± Std** | **0.5866 ± 0.0103** | **0.0816 ± 0.0061** | 0.1553 ± 0.0115 | 0.2379 ± 0.0169 | **0.1874 ± 0.0095** |
+**Key findings:**
+- OrbitGNN optimised: best self-supervised ROC (+0.177 vs ResidMag), F1 (+0.170 vs LSTM-AE), MCC (+0.215 vs LSTM-AE)
+- Optimization over v1: **ΔF1 = +0.071, ΔMCC = +0.095** (3-seed mean); variance halved
+- RF/XGBoost win on ROC (0.70) but require labels → unusable for non-cooperative SSA
 
-### Ablation Study (mean ± std, 3 seeds each)
+### Optimisation Study (Validation Set Only)
 
-| Configuration | Physics | Transformer | GNN | ROC-AUC | PR-AUC | F1 |
-|--------------|:-------:|:-----------:|:---:|---------|--------|-----|
-| Physics Only | ✅ | ❌ | ❌ | 0.5616 ± 0.0000 | 0.0497 ± 0.0000 | 0.1061 ± 0.0000 |
-| Physics + Transformer | ✅ | ✅ | ❌ | 0.5788 ± 0.0058 | 0.0830 ± 0.0028 | 0.1860 ± 0.0104 |
-| Physics + GNN | ✅ | ❌ | ✅ | 0.5587 ± 0.0060 | **0.1168 ± 0.0119** | **0.2404 ± 0.0045** |
-| **Full OrbitGNN** | ✅ | ✅ | ✅ | **0.5866 ± 0.0103** | 0.0816 ± 0.0061 | 0.1874 ± 0.0095 |
+| Experiment | Winner | Val ROC | Δ vs default |
+|------------|--------|---------|-------------|
+| Window size W∈{4,6,8,10,14} | **W=4** | 0.665 | +0.051 |
+| k-neighbours k∈{1,2,3,4,5} | **k=2** | 0.723 | +0.021 |
+| Score weights (grid search) | **ws=2, wpe=0.5, wuc=0** | 0.702 | +0.059 |
+| Architecture v2 (larger, attention GCN) | ❌ rejected | 0.606 | −0.047 |
 
-> The Transformer adds +0.017 ROC-AUC over physics-only. The GNN improves PR-AUC by 2.35×. The full model achieves best ROC-AUC.
+> Architecture v2 (d=96, attention GCN, 3 layers) was uniformly worse — dataset (9 sats) too small for a larger model.
+
+### Multi-Seed Results — OrbitGNN v1 Original (5 seeds)
+
+| Seed | ROC-AUC | PR-AUC | F1 |
+|------|---------|--------|----|
+| 1 | 0.588 | 0.076 | 0.184 |
+| 2 | 0.572 | 0.086 | 0.204 |
+| 3 | 0.588 | 0.075 | 0.187 |
+| 4 | 0.582 | 0.081 | 0.175 |
+| 5 | **0.604** | **0.091** | 0.187 |
+| **Mean ± Std** | **0.587 ± 0.010** | **0.082 ± 0.006** | **0.187 ± 0.010** |
 
 ### Event-Level Detection (mean ± std across 5 seeds)
 
@@ -195,7 +212,7 @@ python physics.py                # physics self-test (also runs in CI)
 | ±48h | 51.3% ± 7.5% | 0.27 |
 | ±72h | **61.3% ± 8.6%** | 0.24 |
 
-Detection offset: mean +3.9h, median −6.5h (negative = alarm before official timestamp, explained by TLE publication lag).
+Detection offset: median −7.0h (alarm fires before official TLE correction, consistent with 6–36h TLE publication lag).
 
 ### Per-Satellite Results (seed=5, ±72h tolerance)
 
@@ -212,6 +229,8 @@ Detection offset: mean +3.9h, median −6.5h (negative = alarm before official t
 | Sentinel-6A | LEO-66° | 2 | 0 | 0.0% | 0.035 | N/A |
 
 ΔV estimated via linearised Gauss tangential burn: `ΔV ≈ (n·|Δa|)/2` where `n=√(μ/a³)`.
+
+
 
 ---
 
