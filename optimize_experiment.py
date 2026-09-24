@@ -193,6 +193,8 @@ def score_v2(model, X_split, Y_split, start_idx):
 # MAIN EXPERIMENT
 # ═══════════════════════════════════════════════════════════════════════════════
 results_v1, results_v2 = [], []
+best_val_roc_v2 = -1.0   # initialise so it is always defined before the first seed comparison
+
 
 for seed in SEEDS:
     print(f"\n{'='*55}")
@@ -228,7 +230,7 @@ for seed in SEEDS:
     results_v2.append(m2_te)
 
     # Save best v2 model (seed with best val ROC)
-    if seed == SEEDS[0] or m2_val['roc_auc'] > best_val_roc_v2:
+    if m2_val['roc_auc'] > best_val_roc_v2:
         best_val_roc_v2 = m2_val['roc_auc']
         torch.save({'state_dict': m2.state_dict(), 'seed': seed},
                    'results/best_model_v2.pt')
